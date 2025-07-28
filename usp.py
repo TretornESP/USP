@@ -14,12 +14,16 @@ class UspService:
             if not dict:
                 raise Exception('Invalid metadata: None')
             metadata = UspService.Metadata()
+            print(dict, flush=True)
             try:
                 metadata.issuer = dict['issuer']
                 metadata.authorization_endpoint = dict['authorization_endpoint']
                 metadata.token_endpoint = dict['token_endpoint']
-                metadata.userinfo_endpoint = dict['userinfo_endpoint']
+                metadata.jwks_uri = dict.get('jwks_uri', "")
+                metadata.introspection_endpoint = dict.get('introspection_endpoint', "")
+                metadata.userinfo_endpoint = dict.get('userinfo_endpoint', "")
                 metadata.end_session_endpoint = dict.get('end_session_endpoint', "")
+                metadata.scopes_supported = dict.get('scopes_supported', [])
             except KeyError as e:
                 raise Exception('Invalid metadata: {}'.format(e))
             return metadata
@@ -29,8 +33,11 @@ class UspService:
                 'issuer': self.issuer,
                 'authorization_endpoint': self.authorization_endpoint,
                 'token_endpoint': self.token_endpoint,
+                'jwks_uri': self.jwks_uri,
+                'introspection_endpoint': self.introspection_endpoint,
                 'userinfo_endpoint': self.userinfo_endpoint,
-                'end_session_endpoint': self.end_session_endpoint
+                'end_session_endpoint': self.end_session_endpoint,
+                'scopes_supported': self.scopes_supported
             }
 
     class AccessTokenResponse:
@@ -38,16 +45,17 @@ class UspService:
             pass
 
         @staticmethod
-        def from_dict(dict):
+        def from_dict(resdict):
             if not dict:
                 raise Exception('Invalid access token response: None')
             response = UspService.AccessTokenResponse()
+            print(resdict, flush=True)
             try:
-                response.id_token = dict['id_token']
-                response.access_token = dict['access_token']
-                response.refresh_token = dict['refresh_token']
-                response.token_type = dict['token_type']
-                response.scope = dict['scope']
+                response.id_token = resdict['id_token']
+                response.access_token = resdict['access_token']
+                response.refresh_token = resdict.get('refresh_token', "")
+                response.token_type = resdict.get('token_type', "")
+                response.scope = resdict.get('scope', "")
             except KeyError as e:
                 raise Exception('Invalid access token response: {}'.format(e))
             return response
@@ -124,7 +132,7 @@ class UspService:
         self.metadata = self.__get_auth_server_metadata()
 
     def __get_auth_server_metadata(self):
-        metadata_url = 'https://{}/adfs/.well-known/openid-configuration'.format(self.auth_server)
+        metadata_url = '{}/.well-known/openid-configuration'.format(self.auth_server)
         r = requests.get(metadata_url, verify=self.verify)
         if r.status_code != 200:
             raise Exception('Failed to get auth server metadata')
@@ -153,6 +161,15 @@ class UspService:
             self.client_id
         )
 
+    def get_claims(self, access_token):
+        headers = {
+            "Authorization": "Bearer {}".format(access_token)
+        }
+        r = requests.get(self.metadata.userinfo_endpoint, headers=headers, verify=self.verify)
+        if r.status_code != 200:
+            raise Exception('Failed to get user claims')
+        return r.json()
+
     def getAccessToken(self, code):
         post_data = {
             "grant_type": "authorization_code",
@@ -164,7 +181,11 @@ class UspService:
         r = requests.post(self.metadata.token_endpoint, data=post_data, verify=self.verify)
         if r.status_code != 200:
             raise Exception('Failed to get id token and access token')
-        return UspService.AccessTokenResponse.from_dict(r.json())
+        response = UspService.AccessTokenResponse.from_dict(r.json())
+        # Check that the scopes are in the metadata
+        if not set(response.scope.split()).issubset(set(self.metadata.scopes_supported)):
+            raise Exception('Invalid scopes in access token response')
+        return response
 
     @staticmethod
     def from_config_file(config_file):
